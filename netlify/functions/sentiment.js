@@ -1,27 +1,31 @@
-const express = require('express');
 const axios = require('axios');
-const serverless = require('serverless-http');
 
-const app = express();
-const router = express.Router();
+exports.handler = async (event, context) => {
+  // CORS 헤더 설정
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  };
 
-// 미들웨어 설정
-router.use(express.json());
-
-// CORS 설정
-router.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-    return;
+  // OPTIONS 요청 처리 (CORS preflight)
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers,
+      body: '',
+    };
   }
-  next();
-});
 
-// 감정 분석 API 엔드포인트
-router.post('/sentiment', async (req, res) => {
+  // POST 요청만 허용
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: 'Method Not Allowed' }),
+    };
+  }
+
   try {
     const apiUrl =
       'https://clovastudio.stream.ntruss.com/testapp/v3/chat-completions/HCX-005';
@@ -31,8 +35,10 @@ router.post('/sentiment', async (req, res) => {
       throw new Error('API 키가 설정되지 않았습니다.');
     }
 
+    const requestBody = JSON.parse(event.body);
+
     console.log('API 호출 시작:', apiUrl);
-    const response = await axios.post(apiUrl, req.body, {
+    const response = await axios.post(apiUrl, requestBody, {
       headers: {
         Authorization: `Bearer ${clovaStudioApiKey}`,
         'Content-Type': 'application/json',
@@ -43,11 +49,11 @@ router.post('/sentiment', async (req, res) => {
 
     console.log('API 응답 상태 코드:', response.status);
 
-    let fullData = '';
-    let resultData = null;
-    let isResultEvent = false;
+    return new Promise((resolve) => {
+      let fullData = '';
+      let resultData = null;
+      let isResultEvent = false;
 
-    return new Promise((resolve, reject) => {
       response.data.on('data', (chunk) => {
         fullData += chunk.toString();
         const lines = chunk.toString().split('\n');
@@ -78,36 +84,44 @@ router.post('/sentiment', async (req, res) => {
 
       response.data.on('end', () => {
         if (resultData) {
-          res.json(resultData);
-          resolve();
-        } else {
-          res.status(500).json({
-            error: '최종 결과를 추출할 수 없습니다.',
-            rawData: fullData.substring(0, 1000),
+          resolve({
+            statusCode: 200,
+            headers,
+            body: JSON.stringify(resultData),
           });
-          resolve();
+        } else {
+          resolve({
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({
+              error: '최종 결과를 추출할 수 없습니다.',
+              rawData: fullData.substring(0, 1000),
+            }),
+          });
         }
       });
 
       response.data.on('error', (error) => {
         console.error('스트리밍 응답 오류:', error.message);
-        res.status(500).json({
-          error: '스트리밍 응답 처리 중 오류 발생',
-          details: error.message,
+        resolve({
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({
+            error: '스트리밍 응답 처리 중 오류 발생',
+            details: error.message,
+          }),
         });
-        resolve();
       });
     });
   } catch (error) {
     console.error('API 호출 오류:', error.message);
-    res.status(error.response?.status || 500).json({
-      error: error.message,
-      details: error.response?.data || 'No additional details available',
-    });
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        error: error.message,
+        details: error.response?.data || 'No additional details available',
+      }),
+    };
   }
-});
-
-app.use('/.netlify/functions/sentiment', router);
-
-// serverless-http로 래핑하여 내보내기
-module.exports.handler = serverless(app);
+};
