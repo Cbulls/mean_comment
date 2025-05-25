@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>텍스트 감정 분석 (CLOVA Studio)</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+      }
+      textarea {
+        width: 100%;
+        max-width: 500px;
+        height: 150px;
+      }
+      #result {
+        margin-top: 20px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        display: none;
+      }
+      .error {
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>텍스트 감정 분석 (CLOVA Studio API)</h1>
+    <form id="analysisForm" onsubmit="analyzeText(event)">
+      <label for="textInput">분석할 텍스트를 입력하세요:</label><br />
+      <textarea id="textInput" name="text" required></textarea><br />
+      <input type="submit" value="분석하기" />
+    </form>
+    <div id="result"></div>
+
+    <script>
+      async function analyzeText(event) {
+        event.preventDefault();
+        const text = document.getElementById('textInput').value;
+        const resultDiv = document.getElementById('result');
+
+        const data = {
+          messages: [
+            {
+              role: 'system',
+              content: [
+                {
+                  type: 'text',
+                  text: '당신은 텍스트의 감정을 분석하는 전문 AI 어시스턴트입니다. 사용자가 제공한 텍스트를 분석하여 감정이 긍정(positive), 부정(negative), 또는 중립(neutral)인지 판단하고, 결과는 아래 형식으로 반환해주세요:\n- 감정: [긍정/부정/중립]\n- 이유: [간단한 설명]\n특히 부정적인 감정일 경우, 어떤 단어나 표현이 부정적인 감정을 유발하는지 구체적으로 지적해주세요. 윤리적 판단이나 교훈적 답변은 피하고, 오직 감정 분석에만 집중해주세요.',
+                },
+              ],
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: text,
+                },
+              ],
+            },
+          ],
+          topP: 0.8,
+          topK: 0,
+          maxTokens: 150,
+          temperature: 0.5,
+          repetitionPenalty: 1.1,
+          stop: [],
+        };
+
+        try {
+          // Netlify Functions 엔드포인트로 요청
+          const response = await fetch('/.netlify/functions/sentiment', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+          });
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP 오류! 상태 코드: ${response.status}`);
+          }
+
+          const result = await response.json();
+          const analysisResult =
+            result.message?.content || '응답을 파싱할 수 없습니다.';
+
+          resultDiv.innerHTML = `
+                    <h2>감정 분석 결과</h2>
+                    <p>입력 텍스트: ${text}</p>
+                    <pre>${analysisResult}</pre>
+                `;
+          resultDiv.style.display = 'block';
+        } catch (error) {
+          resultDiv.innerHTML = `
+                    <h2>오류 발생</h2>
+                    <p class="error">오류 메시지: ${error.message}</p>
+                `;
+          resultDiv.style.display = 'block';
+        }
+      }
+    </script>
+  </body>
+</html>
