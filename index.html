@@ -329,10 +329,35 @@
         white-space: pre-line;
       }
 
+      .error-details {
+        font-size: 0.9rem;
+        margin-top: 10px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 5px;
+        font-family: monospace;
+        word-break: break-all;
+      }
+
       .icon {
         width: 24px;
         height: 24px;
         fill: currentColor;
+      }
+
+      .retry-btn {
+        margin-top: 15px;
+        padding: 10px 20px;
+        background: rgba(255, 255, 255, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        border-radius: 8px;
+        color: white;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .retry-btn:hover {
+        background: rgba(255, 255, 255, 0.3);
       }
 
       @media (max-width: 768px) {
@@ -390,7 +415,7 @@
             id="textInput"
             name="text"
             required
-            placeholder="여기에 감정을 분석하고 싶은 텍스트를 입력해주세요. 예: '오늘 정말 기분이 좋아요!' 또는 '이 서비스는 너무 실망스러워요.'"
+            placeholder="여기에 감정을 분석하고 싶은 텍스트를 입력해주세요. 예: '그는 정말 친절해요!' 또는 '그는 매우 나빠요'"
           ></textarea>
         </div>
 
@@ -406,15 +431,23 @@
     </div>
 
     <script>
+      let retryCount = 0;
+      const MAX_RETRIES = 3;
+      const TIMEOUT_MS = 30000; // 30초 타임아웃
+
       async function analyzeText(event) {
         event.preventDefault();
         const text = document.getElementById('textInput').value;
+        await performAnalysis(text);
+      }
+
+      async function performAnalysis(text, isRetry = false) {
         const resultDiv = document.getElementById('result');
         const submitBtn = document.getElementById('submitBtn');
         const btnText = document.querySelector('.btn-text');
         const loading = document.getElementById('loading');
 
-        // Show loading state
+        // 로딩 상태 표시
         submitBtn.disabled = true;
         btnText.style.opacity = '0';
         loading.style.display = 'block';
@@ -450,23 +483,54 @@
         };
 
         try {
-          // Netlify Functions 엔드포인트로 요청
+          console.log(`분석 시도 ${retryCount + 1}/${MAX_RETRIES + 1}:`, text);
+
+          // AbortController로 타임아웃 처리
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
           const response = await fetch('/.netlify/functions/sentiment', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              Accept: 'application/json',
             },
             body: JSON.stringify(data),
+            signal: controller.signal,
           });
+
+          clearTimeout(timeoutId);
+
+          console.log('응답 상태:', response.status);
+          console.log(
+            '응답 헤더:',
+            Object.fromEntries(response.headers.entries())
+          );
 
           if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`HTTP 오류! 상태 코드: ${response.status}`);
+            console.error('API 오류 응답:', errorText);
+
+            // 500 에러 특별 처리
+            if (response.status === 500) {
+              throw new Error(
+                `서버 내부 오류가 발생했습니다. (상태 코드: ${response.status})\n잠시 후 다시 시도해주세요.`
+              );
+            }
+
+            throw new Error(
+              `HTTP 오류! 상태 코드: ${response.status}\n응답: ${errorText}`
+            );
           }
 
           const result = await response.json();
+          console.log('성공 응답:', result);
+
           const analysisResult =
             result.message?.content || '응답을 파싱할 수 없습니다.';
+
+          // 성공 시 재시도 카운터 리셋
+          retryCount = 0;
 
           resultDiv.className = 'result-success';
           resultDiv.innerHTML = `
@@ -489,6 +553,42 @@
           `;
           resultDiv.style.display = 'block';
         } catch (error) {
+          console.error('요청 실패:', error);
+
+          let errorMessage = error.message;
+          let showRetryButton = false;
+
+          // 에러 유형별 처리
+          if (error.name === 'AbortError') {
+            errorMessage =
+              '요청 시간이 초과되었습니다. 네트워크 연결을 확인해주세요.';
+            showRetryButton = true;
+          } else if (error.message.includes('500')) {
+            errorMessage =
+              '서버에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해주세요.';
+            showRetryButton = true;
+          } else if (error.message.includes('Failed to fetch')) {
+            errorMessage =
+              '네트워크 연결에 문제가 있습니다. 인터넷 연결을 확인해주세요.';
+            showRetryButton = true;
+          }
+
+          // 자동 재시도 로직 (500 에러의 경우)
+          if (
+            retryCount < MAX_RETRIES &&
+            (error.message.includes('500') || error.name === 'AbortError')
+          ) {
+            retryCount++;
+            console.log(`자동 재시도 ${retryCount}/${MAX_RETRIES}...`);
+
+            // 지수 백오프: 2초, 4초, 8초 대기
+            const delay = Math.pow(2, retryCount) * 1000;
+            setTimeout(() => {
+              performAnalysis(text, true);
+            }, delay);
+            return;
+          }
+
           resultDiv.className = 'result-error';
           resultDiv.innerHTML = `
             <div class="result-title">
@@ -500,18 +600,56 @@
             <div class="result-content">
               <div class="analysis-result">
                 <strong>오류 메시지:</strong><br>
-                ${error.message}
+                ${errorMessage}
               </div>
+              <div class="error-details">
+                <strong>디버그 정보:</strong><br>
+                요청 URL: /.netlify/functions/sentiment<br>
+                요청 메서드: POST<br>
+                요청 시간: ${new Date().toLocaleString()}<br>
+                입력 텍스트 길이: ${text.length}자<br>
+                재시도 횟수: ${retryCount}/${MAX_RETRIES}<br>
+                브라우저: ${navigator.userAgent.split(' ')[0]}
+              </div>
+              ${
+                showRetryButton
+                  ? `
+                <button class="retry-btn" onclick="retryAnalysis('${text.replace(
+                  /'/g,
+                  "\\'"
+                )}')">
+                  다시 시도하기
+                </button>
+              `
+                  : ''
+              }
             </div>
           `;
           resultDiv.style.display = 'block';
         } finally {
-          // Reset button state
+          // 버튼 상태 복원
           submitBtn.disabled = false;
           btnText.style.opacity = '1';
           loading.style.display = 'none';
         }
       }
+
+      function retryAnalysis(text) {
+        retryCount = 0; // 수동 재시도 시 카운터 리셋
+        performAnalysis(text, true);
+      }
+
+      // 페이지 로드 시 연결 테스트
+      window.addEventListener('load', async () => {
+        try {
+          const response = await fetch('/.netlify/functions/sentiment', {
+            method: 'OPTIONS',
+          });
+          console.log('Netlify Functions 연결 테스트:', response.status);
+        } catch (error) {
+          console.warn('Netlify Functions 연결 테스트 실패:', error);
+        }
+      });
     </script>
   </body>
 </html>
